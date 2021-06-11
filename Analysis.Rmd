@@ -1,0 +1,919 @@
+---
+title: "STAT697MVFinal"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, message = F}
+library(tidyverse)
+library(DataExplorer)
+library(zoo)
+library(plotly)
+library(lubridate)
+library(scales)
+library(lubridate)
+library(corrplot)
+library(psych)
+library(ggplot2)
+library(pls)
+library(zoo)
+library(Metrics)
+library(VGAM)
+library(e1071)
+library(mvtnorm)
+library(sn)
+data <- read_csv("AirQualityUCI.csv")
+```
+
+```{r}
+# remove columns that don't have any title
+data <- data[1:15]
+
+# here we see that the last 114 rows are completely NAs
+#data[is.na(data$Date) ==TRUE, ] 
+# remove lines full of NAs
+data <- data[is.na(data$Date) == FALSE, ]
+```
+
+
+### Context
+
+Source: https://archive.ics.uci.edu/ml/datasets/Air+quality#
+
+The dataset contains 9358 instances of hourly averaged responses from an array of 5 metal oxide chemical sensors embedded in an Air Quality Chemical Multi-sensor device. There are 13 attributes which potentially can be used as predictors with two outcome variables - Relative Humidity and Absolute Humidity.
+
+
+1) Date (DD/MM/YYYY)
+
+2) Time (HH.MM.SS)
+
+3) CO(GT): True hourly averaged concentration CO in mg/m^3 (reference analyzer)
+
+4) PT08.S1(CO): PT08.S1 (tin oxide) hourly averaged sensor response (nominally CO targeted)
+
+5) NMHC(GT): True hourly averaged overall Non Metanic HydroCarbons concentration in microg/m^3 (reference analyzer)
+
+6) C6H6(GT): True hourly averaged Benzene concentration in microg/m^3 (reference analyzer)
+
+7) PT08.S2(NMHC): PT08.S2 (titania) hourly averaged sensor response (nominally NMHC targeted)
+
+8) NOx(GT): True hourly averaged NOx concentration in ppb (reference analyzer)
+
+9) PT08.S3(NOx): PT08.S3 (tungsten oxide) hourly averaged sensor response (nominally NOx targeted)
+
+10) NO2(GT): True hourly averaged NO2 concentration in microg/m^3 (reference analyzer)
+
+11) PT08.S4(NO2): PT08.S4 (tungsten oxide) hourly averaged sensor response (nominally NO2 targeted)
+
+12) PT08.S5(O3): PT08.S5 (indium oxide) hourly averaged sensor response (nominally O3 targeted)
+
+13) T: Temperature in Â°C
+
+14) RH: Relative Humidity (%)
+
+15) AH: Absolute Humidity
+
+
+## 1) Introduce the data
+```{r}
+# 9357 rows
+# 13 continuous variables + column Date and column Time
+# no NAs
+t(introduce(data))
+str(data)
+```
+
+## 2) Missing values
+```{r}
+#Missing values are tagged with -200 value. 
+data[data == -200] <- NA
+
+# NMHC(GT) has 8443 missing values so drop it
+colSums(is.na(data))
+data <- subset(data, select = -c(`NMHC(GT)`))
+# delete 366 rows with mostly NAs
+data <- data[-as.vector(which(is.na(data$`PT08.S3(NOx)`))),]
+
+### Replace NAs with the mean value of the column
+data[3:14] <- na.aggregate(data[3:14], by=1)
+```
+
+## 3) Transform Date type
+```{r}
+data$Date <- mdy(data$Date)
+data$Time <- hms(data$Time)
+```
+
+## 4) Description of the data
+```{r, message=F}
+summary(data)
+describe(data)
+```
+
+
+## 5) Summary statistics
+```{r}
+# Histogram and density plots to analyze/represent continuous variables 
+plot_density(data)
+plot_histogram(data)
+```
+
+## 6) Correlations
+```{r}
+data_for_cor <- data %>%
+  mutate(hour= hour(Time), month = month(Date))
+data_for_cor <- data_for_cor[3:16]
+
+# the "pairwise.complete.obs" makes sure to avoid NAs
+corrs = cor(data_for_cor, use="pairwise.complete.obs")
+corrplot(corrs, type="upper", method="color", addCoef.col = "black")
+```
+
+## 7) RH and AH over time
+```{r}
+## Over Date
+plot_ly(data, x = ~as.Date(Date)) %>%
+  add_lines(y = ~RH, 
+            name = 'RH', 
+            mode = 'lines') %>%
+  add_lines(y = ~AH, 
+            name = 'AH', 
+            mode = 'lines') %>%
+  layout(title='RH and AH for each month of the year',
+         xaxis = list(title = 'Date'),
+         yaxis = list(title = 'RH and AH'))
+
+## Over Date with scaled values
+data %>%
+  mutate(scl_RH = (RH - min(RH))/(max(RH) - min(RH)), scl_AH = ((AH - min(AH))/(max(AH) - min(AH))))%>%
+plot_ly(x = ~as.Date(Date)) %>%
+  add_lines(y = ~scl_RH, 
+            name = 'RH', 
+            mode = 'lines') %>%
+  add_lines(y = ~scl_AH, 
+            name = 'AH', 
+            mode = 'lines') %>%
+  layout(title='Scaled RH and AH for each month of the year',
+         xaxis = list(title = 'Date'),
+         yaxis = list(title = 'scaled RH and AH'))
+```
+
+
+```{r}
+#### PER MONTH ####
+# boxplot of RH for each month of the year
+data %>%
+ #mutate(month = month(as.POSIXlt(Date, format="%d/%m/%Y"))) %>%
+  mutate(month= as.factor(month(Date))) %>%
+  mutate(months= as.factor(months(Date))) %>%
+  group_by(month, months, RH) %>%
+  ungroup() %>%
+  plot_ly(x = ~month, y = ~RH, name = ~months, type = "box")%>%
+  layout(title='Boxplot of RH for each month of the year ')
+
+# boxplot of AH for each month of the year
+data %>%
+ # mutate(month = month(as.POSIXlt(Date, format="%d/%m/%Y"))) %>%
+  mutate(month= as.factor(month(Date))) %>%
+  mutate(months= as.factor(months(Date))) %>%
+  group_by(month, months, AH) %>%
+  ungroup() %>%
+  plot_ly(x = ~month, y = ~AH, name = ~months, type = "box")%>%
+  layout(title='Boxplot of AH for each month of the year ')
+```
+
+
+```{r}
+#### PER MONTH ####
+# Histogram of RH for each hour of the day
+data %>%
+  mutate(month= as.factor(month(Date))) %>%
+  group_by(month)%>%
+  summarize(mean_RH = mean(RH, na.rm = T)) %>% 
+  plot_ly(x = ~month, 
+          y = ~mean_RH)%>%
+  layout(title='Histogram of RH for each hour of the day',
+         xaxis = list(title = 'hour'),
+         yaxis = list(title = 'RH'))
+# Histogram of AH for each hour of the day
+data %>%
+  mutate(month= as.factor(month(Date))) %>%
+  group_by(month)%>%
+  summarize(mean_AH = mean(AH, na.rm = T)) %>% 
+  plot_ly(x = ~month, 
+          y = ~mean_AH)%>%
+  layout(title='Histogram of AH for each hour of the day',
+         xaxis = list(title = 'hour'),
+         yaxis = list(title = 'AH'))
+```
+
+
+```{r}
+#### PER MONTH ####
+# Histogram RH and AH mean values per hour
+data %>%
+  mutate(month= as.factor(month(Date))) %>%
+  group_by(month)%>%
+  summarize(mean_RH = mean(RH, na.rm = T), mean_AH = mean(AH, na.rm = T)) %>%
+  plot_ly(x = ~month, 
+        y = ~mean_RH, 
+        type = 'bar', 
+        name = 'RH',
+        marker = list(color = 'rgb(55, 83, 109)')) %>% 
+  add_trace(y = ~mean_AH, name = 'AH', marker = list(color = 'rgb(26, 118, 255)')) %>% 
+  layout(title = 'Mean values of RH and AH per month',
+         xaxis = list(
+           title = "Hour",
+           tickfont = list(
+             size = 14,
+             color = 'rgb(107, 107, 107)')),
+         yaxis = list(
+           title = 'Mean values of RH and AH',
+           titlefont = list(
+             size = 16,
+             color = 'rgb(107, 107, 107)'),
+           tickfont = list(
+             size = 14,
+             color = 'rgb(107, 107, 107)')),
+         legend = list(bgcolor = 'rgba(255, 255, 255, 0)', bordercolor = 'rgba(255, 255, 255, 0)'),
+         barmode = 'group', bargap = 0.15, bargroupgap = 0.1)
+
+# Histogram RH and AH scaled mean values per month
+data %>%
+ mutate(month= as.factor(month(Date))) %>%
+  group_by(month)%>%
+  summarize(mean_RH = mean(RH, na.rm = T), mean_AH = mean(AH, na.rm = T)) %>%
+  summarize(month, scl_mean_RH = (mean_RH - min(mean_RH))/(max(mean_RH) - min(mean_RH)), scl_mean_AH = ((mean_AH - min(mean_AH))/(max(mean_AH) - min(mean_AH))))%>%
+  plot_ly(x = ~month, 
+        y = ~scl_mean_RH, 
+        type = 'bar', 
+        name = 'RH',
+        marker = list(color = 'rgb(55, 83, 109)')) %>% 
+  add_trace(y = ~scl_mean_AH, name = 'AH', marker = list(color = 'rgb(26, 118, 255)')) %>% 
+  layout(title = 'Mean values of RH and AH per hour',
+         xaxis = list(
+           title = "Hour",
+           tickfont = list(
+             size = 14,
+             color = 'rgb(107, 107, 107)')),
+         yaxis = list(
+           title = 'Mean values of RH and AH',
+           titlefont = list(
+             size = 16,
+             color = 'rgb(107, 107, 107)'),
+           tickfont = list(
+             size = 14,
+             color = 'rgb(107, 107, 107)')),
+         legend = list(bgcolor = 'rgba(255, 255, 255, 0)', bordercolor = 'rgba(255, 255, 255, 0)'),
+         barmode = 'group', bargap = 0.15, bargroupgap = 0.1)
+```
+
+```{r}
+#### PER HOUR ####
+# boxplot of RH for each hour of the day
+data %>% 
+  mutate(hour= as.factor(hour(Time))) %>%
+  group_by(hour, RH) %>%
+  ungroup() %>%
+  plot_ly(x = ~hour, y = ~RH, type = "box")%>%
+  layout(title='Boxplot of RH for each hour of the day')
+
+# boxplot of AH for each hour of the day
+data %>% 
+  mutate(hour= as.factor(hour(Time))) %>%
+  group_by(hour, AH) %>%
+  ungroup() %>%
+  plot_ly(x = ~hour, y = ~AH, type = "box")%>%
+  layout(title='Boxplot of AH for each hour of the day')
+```
+
+
+```{r}
+#### PER HOUR ####
+# Histogram of RH for each hour of the day
+data %>%
+  mutate(hour= as.factor(hour(Time))) %>%
+  group_by(hour) %>%
+  summarize(mean_RH = mean(RH, na.rm = T)) %>% 
+  plot_ly(x = ~hour, 
+          y = ~mean_RH)%>%
+  layout(title='Histogram of RH for each hour of the day',
+         xaxis = list(title = 'hour'),
+         yaxis = list(title = 'RH'))
+# Histogram of AH for each hour of the day
+data %>%
+  mutate(hour= as.factor(hour(Time))) %>%
+  group_by(hour) %>%
+  summarize(mean_AH = mean(AH, na.rm = T)) %>% 
+  plot_ly(x = ~hour, 
+          y = ~mean_AH)%>%
+  layout(title='Histogram of AH for each hour of the day',
+         xaxis = list(title = 'hour'),
+         yaxis = list(title = 'AH'))
+```
+
+
+```{r}
+#### PER HOUR ####
+# Histogram RH and AH mean values per hour
+data %>%
+  mutate(hour= as.factor(hour(Time))) %>%
+  group_by(hour) %>%
+  summarize(mean_RH = mean(RH, na.rm = T), mean_AH = mean(AH, na.rm = T)) %>%
+  plot_ly(x = ~hour, 
+        y = ~mean_RH, 
+        type = 'bar', 
+        name = 'RH',
+        marker = list(color = 'rgb(55, 83, 109)')) %>% 
+  add_trace(y = ~mean_AH, name = 'AH', marker = list(color = 'rgb(26, 118, 255)')) %>% 
+  layout(title = 'Mean values of RH and AH per hour',
+         xaxis = list(
+           title = "Hour",
+           tickfont = list(
+             size = 14,
+             color = 'rgb(107, 107, 107)')),
+         yaxis = list(
+           title = 'Mean values of RH and AH',
+           titlefont = list(
+             size = 16,
+             color = 'rgb(107, 107, 107)'),
+           tickfont = list(
+             size = 14,
+             color = 'rgb(107, 107, 107)')),
+         legend = list(bgcolor = 'rgba(255, 255, 255, 0)', bordercolor = 'rgba(255, 255, 255, 0)'),
+         barmode = 'group', bargap = 0.15, bargroupgap = 0.1)
+
+# Histogram RH and AH scaled mean values per hour
+data %>%
+  mutate(hour= as.factor(hour(Time))) %>%
+  group_by(hour) %>%
+  summarize(mean_RH = mean(RH), mean_AH = mean(AH))%>%
+  summarize(hour, scl_mean_RH = (mean_RH - min(mean_RH))/(max(mean_RH) - min(mean_RH)), scl_mean_AH = ((mean_AH - min(mean_AH))/(max(mean_AH) - min(mean_AH))))%>%
+  plot_ly(x = ~hour, 
+        y = ~scl_mean_RH, 
+        type = 'bar', 
+        name = 'RH',
+        marker = list(color = 'rgb(55, 83, 109)')) %>% 
+  add_trace(y = ~scl_mean_AH, name = 'AH', marker = list(color = 'rgb(26, 118, 255)')) %>% 
+  layout(title = 'Mean values of RH and AH per hour',
+         xaxis = list(
+           title = "Hour",
+           tickfont = list(
+             size = 14,
+             color = 'rgb(107, 107, 107)')),
+         yaxis = list(
+           title = 'Mean values of RH and AH',
+           titlefont = list(
+             size = 16,
+             color = 'rgb(107, 107, 107)'),
+           tickfont = list(
+             size = 14,
+             color = 'rgb(107, 107, 107)')),
+         legend = list(bgcolor = 'rgba(255, 255, 255, 0)', bordercolor = 'rgba(255, 255, 255, 0)'),
+         barmode = 'group', bargap = 0.15, bargroupgap = 0.1)
+```
+
+
+## 8) Multivariate Regression
+```{r}
+# Fitting a multiple outcomes regression model
+data_ml = data[, -c(1:2)]
+
+# We split our data into 70% train and 30% test
+n <- nrow(data_ml)
+cutoff <- round(.70 * n) - 1
+train_data = data_ml[c(1:cutoff), ]
+test_data = data_ml[c((cutoff+1):n), ]
+test_x = test_data[, -c(11:12)]
+test_y = test_data[, c(11:12)]
+```
+
+
+```{r}
+# Fitting a multivariate Regression Model to our data
+lm_model1 = lm(cbind(RH, AH) ~ ., data = train_data)
+summary(lm_model1)
+
+# Predicting on our test set and calculating RMSE of our predictions
+pred_y = predict(lm_model1, test_x)
+pred_y = as.data.frame(pred_y)
+# RMSE for the outcome RH
+(rmse_lm_RH = sqrt(sum((test_y[, 1] - pred_y[, 1])^2)/nrow(test_y)))
+# RMSE for the outcome AH
+(rmse_lm_AH = sqrt(sum((test_y[, 2] - pred_y[, 2])^2)/nrow(test_y)))
+
+res_lm_RH = lm_model1$residuals[, 1]
+res_lm_AH = lm_model1$residuals[, 2]
+
+# Plot of residuals for outcome RH
+plot(res_lm_RH)
+# Plot of residuals for outcome AH
+plot(res_lm_AH)
+
+par(mfrow=c(2,1))
+# Histogram of residuals for outcome RH
+hist(res_lm_RH, prob=TRUE, main = "Histogram of residuals for RH",
+     xlab = "Residuals - RH")
+lines(density(res_lm_RH), col="red", lwd=2) # add a density estimate with defaults
+lines(density(res_lm_RH, adjust=2), lty="dotted", col="darkgreen", lwd=2) 
+# Histogram of residuals for outcome AH
+hist(res_lm_AH, prob=TRUE, main = "Histogram of residuals for AH",
+     xlab = "Residuals - AH")
+lines(density(res_lm_AH), col="red", lwd=2) # add a density estimate with defaults
+lines(density(res_lm_AH, adjust=2), lty="dotted", col="darkgreen", lwd=2) 
+```
+
+
+## 9) PCA Regression
+```{r}
+# Fitting a PCA on the explanatory variables
+pca1 = princomp(train_data[, c(1:10)], cor = TRUE)
+summary(pca1)
+screeplot(pca1, type = "lines")
+
+# Fitting a principal component regression model on the whole dataset
+pcr_model = pcr(cbind(RH, AH) ~., data = train_data, scale = TRUE, validation = "CV")
+summary(pcr_model)
+validationplot(pcr_model)
+
+# Basis the scree plot we select ncomp = 3 and then fit our model on the training data
+pcr_model_3 = pcr(cbind(RH, AH) ~., data = train_data, scale = TRUE, validation = "CV",
+                 ncomp = 3)
+summary(pcr_model_3)
+#validationplot(pcr_model_3)
+
+# Predicting on our test set and calculating RMSE of our predictions for PCR model with ncomp = 3
+pcr_pred = as.data.frame(predict(pcr_model_3, test_x, ncomp = 3))
+# RMSE for the outcome RH
+(rmse_PCA_RH = sqrt(sum((test_y[, 1] - pcr_pred[, 1])^2)/nrow(test_y)))
+# RMSE for the outcome AH
+(rmse_PCA_AH = sqrt(sum((test_y[, 2] - pcr_pred[, 2])^2)/nrow(test_y)))
+```
+
+
+## 10) Stimulation study
+
+```{r}
+## Collect the estimated betas from the MVN
+r <- length(lm_model1$coefficients)/2
+for (i in 1:r-1){
+  assign(paste0("beta_", i), as.vector(lm_model1$coefficients[i+1,]))
+}
+beta <- cbind(beta_0, beta_1, beta_2, beta_3, beta_4, beta_5, beta_6, beta_7, beta_8, beta_9, beta_10)
+colnames(beta) <- NULL
+
+## Parameters for the Skew Normal Errors with choice of sigma
+mu_0 <- matrix(c(0, 0), ncol = 1)
+Sigma <- matrix(c(var(res_lm_RH), cor(res_lm_RH, res_lm_AH),
+                  cor(res_lm_RH, res_lm_AH), var(res_lm_AH)), nrow = 2)
+cpM <- list(mean=c(mu_0), var.cov=Sigma, gamma1=c(skewness(res_lm_RH)/2, skewness(res_lm_AH)/2))
+dpM <- cp2dp(cpM, family="SN")
+
+## Stimulation
+niter = 1000 # number of simulation iteration
+betas_MVN_RH = betas_MVN_AH = betas_MSN_RH = betas_MSN_AH = matrix(0, niter, 11)
+resi_MVN_RH = resi_MVN_AH = resi_MSN_RH = resi_MSN_AH= array(0, c(n, niter))
+
+set.seed(10) # seed number is fixed as 10, to make simulation study reproducible
+
+X <- as.matrix(cbind(replicate(n, 1),as.matrix(data_ml[,1:10]))) # use data from the dataset
+names <- colnames(X)  # store the names for the graphs
+names[1] <- "Intercept"
+colnames(X) <- NULL
+
+for (iter in 1:niter){
+  
+  # Program for data generating based on the simulation setup
+  errorMVN = mvtnorm::rmvnorm(n, c(mu_0), Sigma) 
+  errorMSN = sn::rmsn(n, dp=dpM)
+  
+  Y_MVN = X %*% t(beta) + errorMVN
+  Y_MSN = X %*% t(beta) + errorMSN
+  
+  # Fit regression model with generated data
+  reg_MVN = lm(Y_MVN ~ X -1)
+  reg_MSN = lm(Y_MSN ~ X -1)
+  
+  # Collect estimates such as betas and residuals
+  ### MVN ###
+  betas_MVN_RH[iter,] = reg_MVN$coefficients[,1]
+  betas_MVN_AH[iter,] = reg_MVN$coefficients[,2]
+  resi_MVN_RH[,iter] = reg_MVN$residuals[,1]
+  resi_MVN_AH[,iter] = reg_MVN$residuals[,2]
+  ### MSN ###
+  betas_MSN_RH[iter,] = reg_MSN$coefficients[,1]
+  betas_MSN_AH[iter,] = reg_MSN$coefficients[,2]
+  resi_MSN_RH[,iter] = reg_MSN$residuals[,1]
+  resi_MSN_AH[,iter] = reg_MSN$residuals[,2]
+}
+
+
+## Table for parameter estimates from Normal and Skew-Normal Errors for RH and AH
+table_RH <- tibble('Estimated value for RH' =names,
+                   'True Value' = rep(NA_real_, 11),
+                   "Normal Estimate" = NA_real_,
+                   'MVN Squared error' = NA_real_,
+                   "Skew Normal Estimate" = NA_real_,
+                   'MSN Squared error' = NA_real_)
+for (i in 1:11){
+  table_RH[i,2] <- beta[1,i]
+  table_RH[i,3] <- mean(betas_MVN_RH[,i])
+  table_RH[i,5] <- mean(betas_MSN_RH[,i])
+}
+table_RH$`MVN Squared error` <- (table_RH$`True Value` - table_RH$`Normal Estimate`)^2
+table_RH$`MSN Squared error` <- (table_RH$`True Value` - table_RH$`Skew Normal Estimate`)^2
+print(table_RH)
+
+table_AH <- tibble('Estimated value for AH' =names,
+                   'True Value' = rep(NA_real_, 11),
+                   "Normal Estimate" = NA_real_,
+                   'MVN Squared error' = NA_real_,
+                   "Skew Normal Estimate" = NA_real_,
+                   'MSN Squared error' = NA_real_)
+
+for (i in 1:11){
+  table_AH[i,2] <- beta[2,i]
+  table_AH[i,3] <- mean(betas_MVN_AH[,i])
+  table_AH[i,5] <- mean(betas_MSN_AH[,i])
+}
+
+table_AH$`MVN Squared error` <- (table_AH$`True Value` - table_AH$`Normal Estimate`)^2
+table_AH$`MSN Squared error` <- (table_AH$`True Value` - table_AH$`Skew Normal Estimate`)^2
+print(table_AH)
+
+
+
+## Sampling distribution of the $\beta$s for RH and AH: Normal Errors (green) and Skew Normal Errors (blue) 
+par(mfrow=c(4,3))
+for (i in 1:11){
+  plot(density(betas_MVN_RH[, i]), main = paste0('Density plot of beta', i-1,' (', names[i],') ', 'for RH'), col="green") + lines(density(betas_MSN_RH[, i]), col="blue", lwd=2) + abline(v = beta[1,i])
+}
+
+par(mfrow=c(4,3))
+for (i in 1:11){
+  plot(density(betas_MVN_AH[, i]), main = paste0('Density plot of beta', i-1,' (', names[i],') ', 'for RH'), col="green") + lines(density(betas_MSN_AH[, i]), col="blue", lwd=2) + abline(v = beta[2,i])
+}
+
+
+## Residuals for outcomes RH and AH with Normal and Skew Normal Errors
+par(mfrow=c(2,2))
+hist(resi_MVN_RH, prob=TRUE, main = "Residuals of RH with Normal Errors",
+     xlab = "Residuals")
+hist(resi_MVN_AH, prob=TRUE, main = "Residuals of AH with Normal Errors",
+     xlab = "Residuals")
+hist(resi_MSN_RH, prob=TRUE, main = "Residuals of RH with Skew-Normal Errors",
+     xlab = "Residuals")
+hist(resi_MSN_AH, prob=TRUE, main = "Residuals of AH with Skew-Normal Errors",
+     xlab = "Residuals")
+```
+
+
+
+## 11) Principal Factor Analysis 
+```{r}
+data_fa <- data[3:12]
+```
+
+
+```{r}
+### Correlation matrix ###
+R <- cor(data_fa)
+as.table(R)
+```
+
+
+### Principal component method With correlation matrix
+```{r}
+##### Principal Component method (with correlation matrix) ##### 
+
+### Proportion of variation - Choice of m ###
+eig <- eigen(R)
+cumsum(eig$values / sum(eig$values))
+```
+
+```{r}
+screeplot(princomp(data_fa), type='lines')
+```
+
+
+```{r}
+### PC with and without rotation ###
+(factors_data <- principal(r = R, nfactors = 3, rotate = "none", covar = FALSE))
+(factors_data_varimax <- principal(r = R, nfactors = 2, rotate = "Varimax", covar = FALSE))
+```
+
+
+#### Maximum Likelihood method with correlation matrix
+
+```{r}
+##### Maximum Likelihood method (with correlation matrix) ##### 
+
+### Proportion of variation - Choice of m ###
+output.df = data.frame()
+for (i in (2:ncol(data_fa))){
+  ML_factors_data <- fa(r = R, fm = "ml", nfactors = i, rotate = "none", covar = FALSE)
+  ML_factors_data_Varimax <- fa(r = R, fm = "ml", nfactors = i, rotate = "Varimax", covar = FALSE)
+  output.df <- rbind(output.df, data.frame(m = i, 'cumulative proportion' = ML_factors_data$Vaccounted[5,i], 'cumulative proportion with rotation' = ML_factors_data_Varimax$Vaccounted[5,i]))
+}
+output.df
+```
+
+
+```{r}
+### ML with and without rotation ### 
+(factor_scores <- fa(r = R, fm = "ml", nfactors = 3, rotate = "none", covar = FALSE))
+(factor_scores_varimax <- fa(r = R, fm = "ml", nfactors = 3, rotate = "Varimax", covar = FALSE))
+```
+
+
+
+
+## 12) Change point analysis 
+
+1) changepoint
+2) Segmented
+3) Tree
+4) bcp
+
+```{r}
+ts_data <- data
+ts_data <- data %>%
+  mutate(Month =  month(ts_data$Date), Hour = hour(ts_data$Time))
+ts_data <- subset(ts_data, select = c(Date, Month, Hour, RH, AH))
+ts_data
+```
+
+
+1) changepoint
+
+```{r}
+library(changepoint)
+###### MONTH ###### 
+## Changepoint for RH per month
+X <- data.frame(date = ts_data$Date, RH = ts_data$RH)
+a <- changepoint::cpt.mean(X$RH)
+m <- unlist(a@param.est)
+cpt <- a@cpts[1]
+(X$date[cpt])
+summary(a)
+ggplot() +
+  geom_line(data = X, aes(x = date, y = RH)) +
+  geom_line(
+    data = data.frame(d = c(X$date[1], X$date[cpt]), y = rep(m[1], 2)),
+    aes(x = d, y = y),
+    color = "red"
+    ) +
+  geom_line(
+    data = data.frame(d = c(X$date[cpt], X$date[dim(X)[1]]), y = rep(m[2], 2)),
+    aes(x = d, y = y),
+    color = "red"
+  )
+
+## Changepoint for AH per month
+X <- data.frame(date = ts_data$Date, AH = ts_data$AH)
+a <- changepoint::cpt.mean(X$AH)
+m <- unlist(a@param.est)
+cpt <- a@cpts[1]
+(X$date[cpt])
+
+ggplot() +
+  geom_line(data = X, aes(x = date, y = AH)) +
+  geom_line(
+    data = data.frame(d = c(X$date[1], X$date[cpt]), y = rep(m[1], 2)),
+    aes(x = d, y = y),
+    color = "red"
+    ) +
+  geom_line(
+    data = data.frame(d = c(X$date[cpt], X$date[dim(X)[1]]), y = rep(m[2], 2)),
+    aes(x = d, y = y),
+    color = "red"
+  )
+
+###### HOUR ###### 
+## RH
+# Mean RH per hour
+
+
+X = aggregate(ts_data$RH, by=list(ts_data$Hour), FUN=mean)
+X <- data.frame(date = X[,1], RH = X[,2])
+a <- changepoint::cpt.mean(X$RH)
+m <- unlist(a@param.est)
+cpt <- a@cpts[1]
+(X$date[cpt])
+summary(a)
+ggplot() +
+  geom_line(data = X, aes(x = date, y = RH)) +
+  geom_line(
+    data = data.frame(d = c(X$date[1], X$date[cpt]), y = rep(m[1], 2)),
+    aes(x = d, y = y),
+    color = "red"
+    ) +
+  geom_line(
+    data = data.frame(d = c(X$date[cpt], X$date[dim(X)[1]]), y = rep(m[2], 2)),
+    aes(x = d, y = y),
+    color = "red"
+  )
+
+
+## AH
+# Mean AH per hour
+X = aggregate(ts_data$AH, by=list(ts_data$Hour), FUN=mean)
+X <- data.frame(date = X[,1], AH = X[,2])
+a <- changepoint::cpt.mean(X$AH)
+m <- unlist(a@param.est)
+cpt <- a@cpts[1]
+(X$date[cpt])
+summary(a)
+ggplot() +
+  geom_line(data = X, aes(x = date, y = AH)) +
+  geom_line(
+    data = data.frame(d = c(X$date[1], X$date[cpt]), y = rep(m[1], 2)),
+    aes(x = d, y = y),
+    color = "red"
+    ) +
+  geom_line(
+    data = data.frame(d = c(X$date[cpt], X$date[dim(X)[1]]), y = rep(m[2], 2)),
+    aes(x = d, y = y),
+    color = "red"
+  )
+
+```
+
+
+2) segmented
+
+```{r}
+library(segmented)
+###### MONTH ###### 
+## RH
+fit_lm = lm(RH ~ 1, data = ts_data)  # intercept-only model
+fit_segmented = segmented(fit_lm, seg.Z = ~Month, npsi = 1)  # Two change points along x
+summary(fit_segmented)
+plot(fit_segmented)
+points(ts_data$AH)
+lines.segmented(fit_segmented)
+points.segmented(fit_segmented)
+
+## AH
+fit_lm = lm(AH ~ 1, data = ts_data)  # intercept-only model
+fit_segmented = segmented(fit_lm, seg.Z = ~Month, npsi = 2)  # Two change points along x
+summary(fit_segmented)
+plot(fit_segmented)
+#plot(ts_data$RH)
+lines.segmented(fit_segmented, col = 'red')
+points.segmented(fit_segmented, col = 'red')
+
+###### Hour ###### 
+
+## RH
+fit_lm = lm(RH ~ 1, data = ts_data)  # intercept-only model
+fit_segmented = segmented(fit_lm, seg.Z = ~Hour, npsi = 2)  # Two change points along x
+summary(fit_segmented)
+plot(fit_segmented)
+points(ts_data$AH)
+lines.segmented(fit_segmented, col = 'red')
+points.segmented(fit_segmented, col = 'red')
+
+## AH
+fit_lm = lm(AH ~ 1, data = ts_data)  # intercept-only model
+fit_segmented = segmented(fit_lm, seg.Z = ~Hour, npsi = 2)  # Two change points along x
+summary(fit_segmented)
+plot(fit_segmented)
+points(ts_data$AH)
+lines.segmented(fit_segmented, col = 'red')
+points.segmented(fit_segmented, col = 'red')
+```
+
+
+3) Tree
+
+```{r}
+library(tree)
+###### MONTH ###### 
+## RH
+tree <- tree(RH ~ Month, data = ts_data)
+summary(tree)
+plot(tree)
+text(tree, pretty = 0)
+
+## AH
+tree <- tree(AH ~ Month, data = ts_data)
+summary(tree)
+plot(tree)
+text(tree, pretty = 0)
+
+
+###### Hour ###### 
+## RH
+tree <- tree(RH ~ Hour, data = ts_data)
+summary(tree)
+plot(tree)
+text(tree, pretty = 0)
+
+# ## AH
+# tree <- tree(AH ~ Hour, data = ts_data)
+# summary(tree)
+# plot(tree)
+# text(tree, pretty = 0)
+```
+
+4) bcp
+
+```{r}
+library(bcp)
+#### MONTH ####
+
+# Mean RH per hour
+tem = aggregate(ts_data$RH, by=list(ts_data$Month), FUN=mean)
+Mean_RH = tem[,2]
+names(Mean_RH) = tem[,1]
+#barplot(Mean_RH, las=2)
+series_RH = ts(Mean_RH,start=c(0), end = c(12))
+
+
+#### bcp
+# Also this method identified the correct month of change.
+# The lower posterior probability plot shows that at many locations, the probability of a change is very high. 
+bcp_x <- bcp(series_RH, return.mcmc = TRUE)
+plot(bcp_x)
+# We can get the exact locations where probabilities are high (e.g. > 70%) with this code:
+bcp_sum <- as.data.frame(summary(bcp_x))
+# Let's filter the data frame and identify the month:
+bcp_sum$id <- 1:length(series_RH)
+(sel <- bcp_sum[which(bcp_x$posterior.prob > 0.7), ])
+# Get the year:
+time(series_RH)[sel$id] 
+
+
+# Mean AH per hour
+tem = aggregate(ts_data$AH, by=list(ts_data$Month), FUN=mean)
+Mean_AH = tem[,2]
+names(Mean_AH) = tem[,1]
+#barplot(Mean_AH, las=2)
+series_AH = ts(Mean_AH,start=c(0), end = c(12))
+
+
+#### bcp
+# Also this method identified the correct month of change.
+# The lower posterior probability plot shows that at many locations, the probability of a change is very high. 
+bcp_x <- bcp(series_AH, return.mcmc = TRUE)
+plot(bcp_x)
+# We can get the exact locations where probabilities are high (e.g. > 70%) with this code:
+bcp_sum <- as.data.frame(summary(bcp_x))
+# Let's filter the data frame and identify the month:
+bcp_sum$id <- 1:length(series_AH)
+(sel <- bcp_sum[which(bcp_x$posterior.prob > 0.7), ])
+# Get the year:
+time(series_RH)[sel$id] 
+
+
+##### HOUR #####
+
+# Mean RH per hour
+tem = aggregate(ts_data$RH, by=list(ts_data$Hour), FUN=mean)
+Mean_RH = tem[,2]
+names(Mean_RH) = tem[,1]
+#barplot(Mean_RH, las=2)
+series_RH = ts(Mean_RH,start=c(0), end = c(23))
+
+
+#### bcp
+# Also this method identified the correct month of change.
+# The lower posterior probability plot shows that at many locations, the probability of a change is very high. 
+bcp_x <- bcp(series_RH, return.mcmc = TRUE)
+plot(bcp_x)
+# We can get the exact locations where probabilities are high (e.g. > 70%) with this code:
+bcp_sum <- as.data.frame(summary(bcp_x))
+# Let's filter the data frame and identify the month:
+bcp_sum$id <- 1:length(series_RH)
+(sel <- bcp_sum[which(bcp_x$posterior.prob > 0.7), ])
+# Get the year:
+time(series_RH)[sel$id] 
+
+
+# Mean AH per hour
+tem = aggregate(ts_data$AH, by=list(ts_data$Hour), FUN=mean)
+Mean_AH = tem[,2]
+names(Mean_AH) = tem[,1]
+#barplot(Mean_AH, las=2)
+series_AH = ts(Mean_AH,start=c(0), end = c(23))
+
+
+#### bcp
+# Also this method identified the correct month of change.
+# The lower posterior probability plot shows that at many locations, the probability of a change is very high. 
+bcp_x <- bcp(series_AH, return.mcmc = TRUE)
+plot(bcp_x)
+# We can get the exact locations where probabilities are high (e.g. > 70%) with this code:
+bcp_sum <- as.data.frame(summary(bcp_x))
+# Let's filter the data frame and identify the month:
+bcp_sum$id <- 1:length(series_AH)
+(sel <- bcp_sum[which(bcp_x$posterior.prob > 0.7), ])
+# Get the year:
+time(series_RH)[sel$id] 
+```
+
+
